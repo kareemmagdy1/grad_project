@@ -15,7 +15,7 @@ def hello_world():
 
 @app.route('/predict-setup')
 def predict():
-    model = load_model('model_Classifier.h5')
+    model = load_model('./ml_models/model_Classifier.h5')
 
     img = image.load_img('./testpic.jpg', target_size=(224, 224))
     test_image = image.img_to_array(img)
