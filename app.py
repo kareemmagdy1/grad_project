@@ -1,7 +1,6 @@
 from flask import Flask
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
-from tensorflow.keras.models import Sequential
 import numpy as np
 
 
