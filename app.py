@@ -205,9 +205,14 @@ def detect_text():
     max = -1
     maxRes = ""
     for k in results.keys():
-        if len(k) > max:
+        if results[k] > max:
             max = results[k]
             maxRes = k
+    if max < 2:
+        for k in results.keys():
+            if len(k) > max:
+                max = results[k]
+                maxRes = k
 
     result = maxRes
     from langdetect import detect
