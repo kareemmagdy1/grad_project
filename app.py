@@ -92,11 +92,6 @@ def detect_currency():
         if results[k] > max:
             max = results[k]
             maxRes = k
-    if max < 2:
-        for k in results.keys():
-            if len(k) > max:
-                max = results[k]
-                maxRes = k
     result = maxRes
     return jsonify({'value': result})
 
