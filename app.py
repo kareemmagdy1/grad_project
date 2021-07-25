@@ -1,49 +1,106 @@
 from flask import Flask, request,jsonify
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
+import tensorflow_hub as hub
 from google.cloud import vision
-import io
 import numpy as np
-import base64
 import webcolors
 import threading
 from translate import Translator
+from PIL import Image, ImageOps
 
-
-#Classifier=Sequential()
 
 app = Flask(__name__)
 
-model = load_model('./ml_models/model_Classifier.h5')
+model = load_model('./ml_models/keras_model.h5', custom_objects={'KerasLayer': hub.KerasLayer})
 
 @app.route('/', methods = ['POST'])
 def hello_world():
     return jsonify({'Test':'Hello World!'})
 
-@app.route('/predict-currency')
-def predict():
-    print(request.remote_addr)
-    img = image.load_img('./testpic.jpg', target_size=(224, 224))
-    test_image = image.img_to_array(img)
-    test_image = np.expand_dims(test_image, axis=0)
-    # result = Classifier.predict(test_image)
-    result=model.predict(test_image)
-    print(result)
-# 10 100 20 200 5 50
-    if result[0][0] == 1:
-        result = '10'
-    elif result[0][1] == 1:
-        result = '100'
-    elif result[0][2] == 1:
-        result = '20'
-    elif result[0][3] == 1:
-        result = '200'
-    elif result[0][4] == 1:
-        result = '5'
-    elif result[0][5] == 1:
-        result = '50'
-    return jsonify({'value':result})
+# detect currency using the Model created for a single frame
+def detect_currency_frame(i,output):
+    s = 'image'
+    s += str(i)
+    img = Image.open(request.files[s])
+    img.save(s+'.jpg')
+    img = Image.open(s+'.jpg')
 
+    # Create the array of the right shape to feed into the keras model
+    data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
+    image = img
+
+    #image sizing
+    size = (224, 224)
+    image = ImageOps.fit(image, size, Image.ANTIALIAS)
+
+    #turn the image into a numpy array
+    image_array = np.asarray(image)
+
+    # Normalize the image
+    normalized_image_array = (image_array.astype(np.float32) / 127.0) - 1
+    
+    # Load the image into the array
+    data[0] = normalized_image_array
+    
+    # run the inference
+    print('Started predicting')
+    prediction = model.predict(data)
+    print(prediction)
+    print('Predicting done')
+    result = np.argmax(prediction)
+    print(result)
+    switcher = {
+                 0:"خمسة جنيهات", 
+                 1:"عشرة جنيهات",
+                 2:"عشرون جنيه",
+                 3:"خمسون جنيه",
+                 4:"مائة جنيه",
+                 5:"مائتي جنيه"
+        }
+    s=switcher.get(result, "Not Maching")
+    output.append(s)
+    print(s)
+
+@app.route('/predict-currency', methods = ['POST'])
+def detect_currency():
+    print(request.remote_addr)
+
+    # create output list to hold all 4 results of the 4 frames
+    output = list()
+
+    for i in range(1, 5):
+        detect_currency_frame(i, output)
+
+    # Print all outputs in the console
+    print(output)
+
+    # create a map to save count of each result
+    results = dict()
+
+    # For loop to count the number of occurrences of each currency if different currencies
+    for res in output:
+        if res in results.keys():
+            results[res] += 1
+        else:
+            results[res] = 1
+
+    # Return the value with maximum occurrences
+    max = -1
+    maxRes = ""
+    for k in results.keys():
+        if results[k] > max:
+            max = results[k]
+            maxRes = k
+    if max < 2:
+        for k in results.keys():
+            if len(k) > max:
+                max = results[k]
+                maxRes = k
+    result = maxRes
+    return jsonify({'value': result})
+
+# function to get the closest color with a name and return the name
 def closest_colour(requested_colour):
     min_colours = {}
     for key, name in webcolors.CSS3_HEX_TO_NAMES.items():
@@ -54,6 +111,7 @@ def closest_colour(requested_colour):
         min_colours[(rd + gd + bd)] = name
     return min_colours[min(min_colours.keys())]
 
+# returns the actual name and closest name of a coloro using the previous function and webcolors Library
 def get_colour_name(requested_colour):
     try:
         closest_name = actual_name = webcolors.rgb_to_name(requested_colour)
@@ -62,6 +120,7 @@ def get_colour_name(requested_colour):
         actual_name = None
     return actual_name, closest_name
 
+# function to detect color using google cloud services API for a single frame
 def detect_color_frame(i,output):
     client = vision.ImageAnnotatorClient()
     s = 'image'
@@ -72,17 +131,17 @@ def detect_color_frame(i,output):
     response = client.image_properties(image=image)
     props = response.image_properties_annotation
     print('Properties:')
-
+    # get the color in RGB format, and get its name
     for color in props.dominant_colors.colors:
         print('fraction: {}'.format(color.pixel_fraction))
         print('\tr: {}'.format(color.color.red))
         print('\tg: {}'.format(color.color.green))
         print('\tb: {}'.format(color.color.blue))
         print('\ta: {}'.format(color.color.alpha))
-        result = ""
         _, result = get_colour_name((int(color.color.red), int(color.color.green), int(color.color.blue)))
         print(result)
         output.append(result)
+        # Break after first iteration because we only need the most dominant color in the picture
         break
 
     if response.error.message:
@@ -94,27 +153,33 @@ def detect_color_frame(i,output):
 @app.route('/detect-color', methods = ['POST'])
 def detect_color():
     print(request.remote_addr)
+
+    # create jobs array for threading
     jobs = []
+    # create list to carry all the outputs
     output = list()
-    for i in range(1,5):
+    for i in range(4, 0, -1):
         thread = threading.Thread(target=detect_color_frame(i,output))
         jobs.append(thread)
 
+    # Start all Jobs
     for j in jobs:
         j.start()
+    # Make sure all Jobs has finished
     for j in jobs:
         j.join()
 
-    print(output) #Print all outputs in the console
+    # Print all outputs in the console
+    print(output)
 
     results = dict()
-    # For loop to count the number of occurences of each color if different colors
+    # For loop to count the number of occurrences of each color if different colors
     for res in output:
         if res in results.keys():
             results[res] += 1
         else:
             results[res] = 1
-    # Return the color with maximum occurences
+    # Return the color with maximum occurrences
     max = -1
     maxRes = ""
     for k in results.keys():
@@ -124,9 +189,12 @@ def detect_color():
     # get the color in arabic
     translator = Translator(from_lang="english", to_lang="arabic")
     result = translator.translate(maxRes)
+    print(result.replace('color',''))
+    result = result.replace('color','')
     return jsonify({'color':result})
 
 
+# function to apply OCR on a single frame
 def detect_text_frame(i,output):
     """Detects text in the file."""
 
@@ -147,67 +215,52 @@ def detect_text_frame(i,output):
         print('\n"{}"'.format(text.description))
         result += text.description
         break
-        vertices = (['({},{})'.format(vertex.x, vertex.y)
-                     for vertex in text.bounding_poly.vertices])
-        print('bounds: {}'.format(','.join(vertices)))
+
     output.append(result)
-    # response = client.document_text_detection(image=image)
-    # for page in response.full_text_annotation.pages:
-    #     for block in page.blocks:
-    #         print('\nBlock confidence: {}\n'.format(block.confidence))
-    #
-    #         for paragraph in block.paragraphs:
-    #             print('Paragraph confidence: {}'.format(
-    #                 paragraph.confidence))
-    #
-    #             for word in paragraph.words:
-    #                 word_text = ''.join([
-    #                     symbol.text for symbol in word.symbols
-    #                 ])
-    #                 print('Word text: {} (confidence: {})'.format(
-    #                     word_text, word.confidence))
-    #                 # result = word_text
-    #
-    #                 for symbol in word.symbols:
-    #                     print('\tSymbol: {} (confidence: {})'.format(
-    #                         symbol.text, symbol.confidence))
 
     if response.error.message:
         raise Exception(
             '{}\nFor more info on error messages, check: '
             'https://cloud.google.com/apis/design/errors'.format(
                 response.error.message))
+        # [END vision_python_migration_text_detection]
+# [END vision_text_detection]
 
 @app.route('/detect-text', methods = ['POST'])
 def detect_text():
     print(request.remote_addr)
+    # create jobs array for threading
     jobs = []
+    # create list to carry all the outputs
     output = list()
-    for i in range(1, 5):
+    for i in range(4, 0, -1):
         thread = threading.Thread(target=detect_text_frame(i, output))
         jobs.append(thread)
-
+    # Start all Jobs
     for j in jobs:
         j.start()
+    # Make sure all Jobs has finished
     for j in jobs:
         j.join()
 
-    print(output)  # Print all outputs in the console
+    # Print all outputs in the console
+    print(output)
 
     results = dict()
-    # For loop to count the number of occurences of each color if different colors
+    # For loop to count the number of occurrences of each text if different texts
     for res in output:
         if res in results.keys():
             results[res] += 1
         else:
             results[res] = 1
-    # Return the color with maximum occurences
+    # Return the text with maximum occurrences
     max = -1
     maxRes = ""
     for k in results.keys():
         if results[k] > max:
             max = results[k]
             maxRes = k
+    # if there is no text occurred more than 1 time, then choose the largest text.
     if max < 2:
         for k in results.keys():
             if len(k) > max:
@@ -215,12 +268,20 @@ def detect_text():
                 maxRes = k
 
     result = maxRes
+    # Library to detect the language of the extracted text from the picture
+    # to use the correct voice from the frontend
     from langdetect import detect
-    lang = detect(result)
-    print(lang)
-    return jsonify({'extracted':result,'lang':lang})
-    # [END vision_python_migration_text_detection]
-# [END vision_text_detection]
+    try:
+        lang = detect(result)
+        print(lang)
+    except:
+        lang = 'ar'
+    if lang == 'de':
+        lang = 'en'
+    # count number of words by counting spaces and new lines
+    words = len(result.split(' ')) + len(result.split('\n'))
+    return jsonify({'extracted':result,'lang':lang, 'words':words})
+
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5005,threaded=False,processes=4)
+    app.run(host='0.0.0.0', port=5005)
